@@ -1,13 +1,15 @@
 package session
 
 import (
+	"sync"
+	"time"
+
 	. "github.com/daniel840829/gameServer/msg"
 	. "github.com/daniel840829/gameServer/uuid"
 	"github.com/golang/protobuf/proto"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
-	"sync"
 )
 
 type ChatMessage struct {
@@ -31,22 +33,26 @@ var RoomManager *roomManager = &roomManager{
 }
 
 type GameServer struct {
-	Addr   string
-	Port   string
-	Client AgentToGameClient
-	Rooms  map[*Room]struct{}
+	ExtIp      string
+	AgentPort  string
+	ClientPort string
+	Client     AgentToGameClient
+	Rooms      map[*Room]struct{}
+	id         string
 }
 
-func NewGameServer(addr string) (gameServer *GameServer) {
-	conn, err := grpc.Dial(":"+addr, grpc.WithInsecure())
+func newGameServer(ExtIp, clientToGamePort, agentToGamePort, id string) (gameServer *GameServer) {
+	conn, err := grpc.Dial(ExtIp+":"+agentToGamePort, grpc.WithInsecure())
 	if err != nil {
 		log.Warn("Agent can't connect to GameServer", err)
 		return
 	}
 	gameServer = &GameServer{
-		Addr:  "35.201.150.218",
-		Port:  ":" + addr,
-		Rooms: make(map[*Room]struct{}, 0),
+		id:         id,
+		ExtIp:      ExtIp,
+		ClientPort: ":" + clientToGamePort,
+		AgentPort:  ":" + agentToGamePort,
+		Rooms:      make(map[*Room]struct{}, 0),
 	}
 	gameServer.Client = NewAgentToGameClient(conn)
 	log.Debug("client", gameServer.Client)
@@ -67,18 +73,23 @@ func (rm *roomManager) DeleteRoom(room *Room) {
 	rm.UpdateRoomList()
 }
 
-func (rm *roomManager) ConnectGameServer(addr string) {
-	rm.GameServers[NewGameServer(addr)] = struct{}{}
+func (rm *roomManager) ConnectGameServer(ExtIp, clientToGamePort, agentToGamePort, id string) {
+	rm.GameServers[newGameServer(ExtIp, clientToGamePort, agentToGamePort, id)] = struct{}{}
 	log.Debug("Connect Game Server")
 }
 
 func (rm *roomManager) GetGameServer() (game *GameServer) {
+
 	for gs, _ := range rm.GameServers {
-		if game == nil {
-			game = gs
-		} else if len(gs.Rooms) < len(game.Rooms) {
-			game = gs
+		if len(gs.Rooms) >= MAX_ROOM_IN_POD {
+			continue
 		}
+		game = gs
+		break
+	}
+	if game == nil {
+		ClusterManager.CreatePod()
+		game = rm.GetGameServer()
 	}
 	return
 }
@@ -307,14 +318,24 @@ func (r *Room) CreateRoomOnGameServer() {
 		}
 		gs := RoomManager.GetGameServer()
 		gs.Rooms[r] = struct{}{}
-		key, err := gs.Client.AquireGameRoom(context.Background(), gameCreation)
-		if err != nil {
-			log.Warn("GameServer has some issue", err)
+		pem := make(chan *PemKey)
+		var getKey func(sig chan *PemKey)
+		getKey = func(sig chan *PemKey) {
+			key, err := gs.Client.AquireGameRoom(context.Background(), gameCreation)
+			if err != nil {
+				log.Warn("GameServer has some issue: ", err)
+				time.Sleep(2 * time.Second)
+				go getKey(sig)
+				return
+			}
+			sig <- key
 		}
+		go getKey(pem)
+		key := <-pem
 		c := r.Master.GetMsgChan("ServerInfo")
 		serverInfo := &ServerInfo{
-			Addr:      gs.Addr,
-			Port:      gs.Port,
+			Addr:      gs.ExtIp,
+			Port:      gs.ClientPort,
 			PublicKey: key.SSL,
 		}
 		c.DataCh <- serverInfo

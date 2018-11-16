@@ -1,0 +1,54 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agent
+  labels:
+    app: gameserver
+    type: agent
+    id: ''
+    agentToGamePort: ''
+    clientToGamePort: '8080'
+    clientToAgentPort: '50051'
+spec:
+  hostNetwork: true
+  restartPolicy: Never
+  containers:
+  - name: game-server
+    image: daniel840829/gameplayserver:circleci-latest
+    imagePullPolicy: Always
+    env:
+      - name: CLIENT_TO_GAME_PORT
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['clientToGamePort']
+      - name: AGENT_TO_GAME_PORT
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['agentToGamePort']
+      - name: SERVER_TYPE
+        valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['type']
+      - name: ID
+        valueFrom:
+            fieldRef:
+              fieldPath: metadata.labels['id']
+      - name: CLIENT_TO_AGENT_PORT
+        valueFrom:
+          fieldRef:
+            fieldPath: metadata.labels['clientToAgentPort']
+      - name: MGO_PASS
+        valueFrom:
+          secretKeyRef:
+            name: agent-secret
+            key: mgoPass
+      - name: MGO_USER
+        valueFrom:
+          secretKeyRef:
+            name: agent-secret
+            key: mgoUser
+      - name: MGO_ADDR
+        valueFrom:
+          secretKeyRef:
+            name: agent-secret
+            key: mgoAddr
